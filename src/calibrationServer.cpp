@@ -22,7 +22,7 @@
  * <li>if lines get longer, use 4k7 pull-up resistors on I2C lines (at master)
  * </ul>
  */
- /*
+/*
     This program is free software: you can redistribute it and/or modify
     it under the terms of the GNU General Public License as published by
     the Free Software Foundation, either version 3 of the License, or
@@ -39,7 +39,6 @@
     Copyright 2021 makerMcl
  */
 
-
 #include <Arduino.h>
 #include <Streaming.h>
 #include <ESP8266WiFi.h>
@@ -54,7 +53,7 @@
 #include <Wire.h>
 #include <DallasTemperature.h>
 
-#define LOGBUF_LENGTH 10000 //20000 // log buffer size; need at least 25k for ESP async server!
+#define LOGBUF_LENGTH 15000 //20000 // log buffer size; need at least 25k for ESP async server!
 // note: `#define COPY_TO_SERIAL` must be ommitted in universalSettings.h!
 #define UNIVERSALUI_WIFI_MAX_CONNECT_TRIES 20
 #define UNIVERSALUI_WIFI_RECONNECT_WAIT 1000
@@ -275,7 +274,7 @@ void loop()
     {
       bme->read(pressureBme280, temperatureBme280, humidityBme280, tempUnit, presUnit);
     }
-    if (NAN == pressureBme280 && NAN == temperatureBme280 && NAN == humidityBme280)
+    if (isnan(pressureBme280) && isnan(temperatureBme280) && isnan(humidityBme280))
     {
       out << COLUMN_SEPARATOR << COLUMN_SEPARATOR << COLUMN_SEPARATOR << COLUMN_SEPARATOR << COLUMN_SEPARATOR;
     }
