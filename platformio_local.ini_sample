@@ -1,0 +1,9 @@
+# this file should not be checked in, it contains sensitive information and defines the default environment to use
+[platformio]
+default_envs = calibration
+
+[envy]
+# configuration of OTA capabilities
+ota_port     = <define-it>
+ota_password = <password-for-ota>
+upload_port  = <ip-of-your-board>

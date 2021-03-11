@@ -1,0 +1,56 @@
+*{margin:0;font-family:Arial,Helvetica,sans-serif;} 
+h1{font-size:5vw;} 
+h2{padding-top:15px;} 
+p{margin:15px 25px 0px 5px;}
+
+
+.active {
+    background-color: green;
+}
+
+.shutdown {
+    color: blue;
+}
+
+
+body.main {height:100%;}
+div.main {position:relative;min-height:95%;}
+div.head {background-color:lightgrey;bottom:0;text-align:center;height:2.5em;margin-left:1%;padding: 0 10px;}
+h1.head {position: absolute;top: 0;padding-left:10%;}
+div.content {padding:1em 1% 2em 1%;}
+p.content {padding-top:10%;}
+div.message {margin-top:50px;background-color: rgb(230,230,230);padding:5px;border-top:solid 1px;}
+
+
+body#log {background-color:grey;}
+pre.log {
+    font-family: "Consolas", "lucida console", monospace;
+    padding: 5px;
+    font-size: 15px;
+    word-break: break-all;
+    word-wrap: break-word;
+    color: white;
+    background-color: #111;
+    display: block;
+    line-height: 1.5em;
+    margin-top: 0;
+}
+table.loghead {
+    position: fixed;
+    height: 2em;
+    width: 95%;
+    background-color: lightgrey;
+    margin: 0 2% 0 2%;
+    font-family: Arial, Helvetica, sans-serif;
+    font-size: 2vw;
+}
+span.logstatus {color:blue;font-weight:bold;}
+
+
+.units {font-size: 1.2rem;}
+.value {text-align:right; padding-right:15px;}
+.sensor-labels {
+    font-size: 1.5rem;
+    vertical-align:middle;
+    padding-bottom: 15px;
+}

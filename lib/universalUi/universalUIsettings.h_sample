@@ -1,0 +1,15 @@
+/*
+ * Note: copy this file to universalUIsettings.h and adapt to your needs
+ */
+#ifndef UNIVERSAL_UI_SETTINGS_H
+#define UNIVERSAL_UI_SETTINGS_H
+
+#define LOCAL_WIFI_SSID "YOUR_NETWORK_NAME"
+#define LOCAL_WIFI_WPSK "HOPE_YOU_HAVE_A_PASSWORD"
+#define OTA_PORT 2796
+#define OTA_AUTH_MD5 "983475ebbbdf96580485b9501592d6db" // generate with any MD5 tool, you can find some online
+
+//#define NTP_UPDATE_INTERVAL 3600000 // every hour, in [ms]
+//#define NTP_RETRY_INTERVAL 60000    // once a minute, in [ms]
+
+#endif

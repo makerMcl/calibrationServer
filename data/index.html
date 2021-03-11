@@ -1,0 +1,56 @@
+<html>
+
+<head>
+  %REFRESHINDEXTAG%
+  <link rel="stylesheet" type="text/css" href="style.css">
+  <link rel="icon" type="image/vnd.microsoft.icon" href="/favicon.ico">
+  <meta charset="iso-8859-1" />
+</head>
+
+<body class="main">
+  <div class="main">
+    <div class="head">
+      %REFRESHINDEXLINK% &nbsp; | &nbsp; <a href="/download">Download</a> &nbsp; | &nbsp; <a href="/log.html">Log</a> <span style="white-space:nowrap;">Build:
+        %__TIMESTAMP__%</span></div>
+    <!--<h1 class="head">%APPNAME%</h1>-->
+    <div class="content">
+      <p class="content" style="padding-bottom: 50px;">%STATUSBAR%</p>
+
+      <table style="max-width:500px;margin-left: auto; margin-right: auto;">
+        <thead>
+          <tr>
+            <th>Sensor</th>
+            <th>Temperatur</th>
+            <th>Luftfeuchte</th>
+            <th>Luftdruck</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>BME280</td>
+            <td class="value">%BME280_TEMPERATURE% <span class="units">°C</span></td>
+            <td class="value">%BME280_HUMIDITY% <span class="units">%%</span></td>
+            <td class="value">%BME280_PRESSURE% <span class="units">Pa</span></td>
+          </tr>
+
+          <tr>
+            <td>BMP180</td>
+            <td class="value">%BMP180_TEMPERATURE% <span class="units">°C</span></td>
+            <td class="value">%BMP180_HUMIDITY% <span class="units">%%</span></td>
+          </tr>
+
+          <tr>
+            <td>DS18B20</td>
+            <td class="value">%DS18B20_TEMPERATURE% <span class="units">°C</span></td>
+          </tr>
+        </tbody>
+      </table>
+
+      <div class="message">
+        %USERMESSAGE%
+      </div>
+    </div>
+  </div>
+</body>
+
+</html>
