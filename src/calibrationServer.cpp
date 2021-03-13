@@ -80,7 +80,7 @@ BME280I2C *bme = new BME280I2C(); // Default : forced mode, standby time = 1000 
 BME280::TempUnit tempUnit(BME280::TempUnit_Celsius);
 BME280::PresUnit presUnit(BME280::PresUnit_Pa);
 
-float temperatureDs18b20 = NAN;
+float temperatureDs18b20(NAN);
 float temperatureBmp180(NAN), humidityBmp180(NAN);
 float temperatureBme280(NAN), humidityBme280(NAN), pressureBme280(NAN);
 
@@ -135,7 +135,9 @@ void serverSetup()
   });
   webUiServer->on("/log.html", HTTP_ANY, [](AsyncWebServerRequest *request) {
     refreshState->evaluateRefreshParameters(request);
-    AsyncWebServerResponse *response = request->beginResponse(SPIFFS, "/log.html", "text/html", false, placeholderProcessor);
+    // note: placeholder for log buffer content is $LOG$
+    AsyncWebServerResponse *response = //request->beginResponse(SPIFFS, "/log.html", "text/html", false, placeholderProcessor);
+        request->beginStatefulResponse("text/html", 0, new FileWithLogBufferResponseDataSource(SPIFFS, "/log.html"), placeholderProcessor);
     response->addHeader(F("Cache-Control"), F("no-cache, must-revalidate"));
     response->addHeader(F("Pragma"), F("no-cache"));
     request->send(response);
@@ -161,6 +163,7 @@ void serverSetup()
   });
   webUiServer->onNotFound([](AsyncWebServerRequest *request) {
     String body = (request->hasParam("body", true)) ? request->getParam("body", true)->value() : String();
+    Serial << " not found! " << request->url();
     ui.logInfo() << F("unknown uri=") << request->url() << ", method=" << request->method() << ", body=" << body << endl;
   });
 #pragma GCC diagnostic pop
@@ -239,14 +242,13 @@ void loop()
 
     // DS18B20 sensor
     unsigned long now = millis();
-    if ((nullptr != sensorDS18B20) && DEVICE_DISCONNECTED_C != (temperatureDs18b20 = sensorDS18B20->getTempC(ds18b20Address)))
+    if (sensorDS18B20 && (DEVICE_DISCONNECTED_C != (temperatureDs18b20 = sensorDS18B20->getTempC(ds18b20Address))))
     {
       out << COLUMN_SEPARATOR << _FLOAT(temperatureDs18b20, 1) << COLUMN_SEPARATOR;
       out << (millis() < now) << COLUMN_SEPARATOR;
     }
     else
     {
-      temperatureDs18b20 = NAN;
       out << COLUMN_SEPARATOR << COLUMN_SEPARATOR;
     }
 
@@ -288,5 +290,6 @@ void loop()
     // end of spreadsheet output
     out << endl;
     logToSerial() << "[MAIN] Free heap: " << ESP.getFreeHeap() << " bytes\n";
+    delay(1); // enforce next millisecond
   }
 }
