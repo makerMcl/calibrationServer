@@ -4,13 +4,18 @@
  * Original use was for calibration of NTC sensors, serving as reference,
  * 
  * <h>Supported sensors:</h2>
- * 	<li> KY-001 DS18B20 Temperature: ±0.5°C over the range ?10 to +85°C.
+ * 	<li> KY-001 DS18B20 Temperature: ±0.5°C over the range -10 to +85°C.
  *        Pinout (left-to-right): GND - Data - Vcc 3.3V
  *        OneWire: 4k7 PullUp-Widerstand between Data and Vcc
  * <li> BMP180: i2c, +-2°C accuracy
  *        Pinout: (left-to-right): Vcc 3.3V, GND, SCL, SDA
  * <li> BME280: i2c, +-1°C accuracy
  *        Pinout: (left-to-right): Vcc 3.3V, GND, SCL, SDA
+ * 
+ * Circuitry:
+ * * OneWire: 4k7 Pull-UP against Vcc=3.3V
+ * * I2C: 2x 4k7k against Vcc=3.3V   ( to have some safety against serial resistancies)
+ * * Vcc: 100..220nF directly an Vcc-Pins; + 1000µF for buffering WLAN-transmission
  * 
  * Pins used on Wemos D1 Mini:
  * * D1 = GPIO5 = SCL
@@ -53,7 +58,9 @@
 #include <Wire.h>
 #include <DallasTemperature.h>
 
-#define LOGBUF_LENGTH 15000 //20000 // log buffer size; need at least 25k for ESP async server!
+#define LOGBUF_LENGTH 30000 // log buffer size
+//#define VERBOSE_DEBUG_LOGBUFFER
+
 // note: `#define COPY_TO_SERIAL` must be ommitted in universalSettings.h!
 #define UNIVERSALUI_WIFI_MAX_CONNECT_TRIES 20
 #define UNIVERSALUI_WIFI_RECONNECT_WAIT 1000
@@ -236,9 +243,18 @@ void setup()
 
 void loop()
 {
-  if (ui.handle() && (millis() % 2000) == 1500)
+  if (ui.handle() && (millis() % 5000) == 4500)
   {
     Print &out = ui.logInfo();
+
+    // TODO test loop for bug of missing 2 characters in part 0 of clipped log buf content
+    if (false)
+    {
+      logToSerial() << "[MAIN] Free heap: " << ESP.getFreeHeap() << " bytes\n";
+      out << "     01234567890123456789012345678901234567890123456789" << endl; // 70chars per line
+      delay(1);                                                                 // enforce next millisecond
+      return;
+    }
 
     // DS18B20 sensor
     unsigned long now = millis();

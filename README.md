@@ -48,4 +48,11 @@ Note: To avoid unmonitored commercial use of this work while giving back to the 
 ## TODOs
 * improve styling of HTML
 * REST-API, use AJAX/jQuery to update measurements on index.html
-* bugfix: sometimes reboots (suspect is memory-overload from EspAsyncWebserver)
+* known bug: 2 missing chars, when clipped logbuf in part 0 at index=105 and index=119
+    ** problem is deterministic, always 2 missing characters at same index position
+    ** in logbuffer the string is complete
+    ** to speed-up reproduction: reduce loop time (i.e. 500ms), reduce logbuffer to 2500, print
+    ** in webUiGenericPlaceHolder.h the complete buf without missing chars is returned to caller
+        -> look for the bug in calling code of webUiGenericPlaceHolder.h
+    ** not relevant, but: heavy-load-test with 500ms loop-time and 3 webclients refreshing every second in parallel showed no problems
+
