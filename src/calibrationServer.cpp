@@ -78,12 +78,12 @@
 UniversalUI ui = UniversalUI("calibrationServer");
 WiFiUDP ntpUDP;
 NTPClient *timeClient = new NTPClient(ntpUDP, "europe.pool.ntp.org", 3600, 60000);
-SHT3X *sht = new SHT3X(0x44);
+SHT3X *sht = new SHT3X(0x77);
 OneWire oneWire(PIN_DS18B20);
 DallasTemperature *sensorDS18B20 = new DallasTemperature(&oneWire);
 DeviceAddress ds18b20Address;
 
-BME280I2C *bme = new BME280I2C(); // Default : forced mode, standby time = 1000 ms; Oversampling = pressure ×1, temperature ×1, humidity ×1, filter off
+BME280I2C *bme = new BME280I2C(); // Default, address=0x76, forced mode, standby time = 1000 ms; Oversampling = pressure ×1, temperature ×1, humidity ×1, filter off
 BME280::TempUnit tempUnit(BME280::TempUnit_Celsius);
 BME280::PresUnit presUnit(BME280::PresUnit_Pa);
 
@@ -93,7 +93,7 @@ float temperatureBme280(NAN), humidityBme280(NAN), pressureBme280(NAN);
 
 AppendBuffer buf = AppendBuffer(2000);
 AsyncWebServer *webUiServer = new AsyncWebServer(80);
-RefreshState *refreshState = new RefreshState(2);
+RefreshState *refreshState = new RefreshState(5);
 
 String placeholderProcessor(const String &var)
 {
@@ -196,14 +196,48 @@ void setup()
   ui.setNtpClient(timeClient);
   ui.init(LED_BUILTIN, true, F(__FILE__), F(__TIMESTAMP__));
   ui.setBlink(100, 4900);
-
   serverSetup();
+
+  int nDevices = 0;
+  for (byte address = 1; address < 127; address++)
+  {
+    // The i2c_scanner uses the return value of
+    // the Write.endTransmisstion to see if
+    // a device did acknowledge to the address.
+    Wire.beginTransmission(address);
+    byte error = Wire.endTransmission();
+    if (error == 0)
+    {
+      Serial << "I2C device found at address 0x" << _WIDTHZ(_HEX(address), 2) << endl;
+      ui.logInfo() << "I2C device found at address 0x" << _WIDTHZ(_HEX(address), 2) << endl;
+      nDevices++;
+    }
+    else if (error == 4)
+    {
+      Serial << "Unknown error at address 0x" << _WIDTHZ(_HEX(address), 2) << endl;
+      ui.logError() << "Unknown error at address 0x" << _WIDTHZ(_HEX(address), 2) << endl;
+    }
+  }
+  if (nDevices == 0)
+  {
+    Serial << "No I2C devices found\n";
+    ui.logWarn() << "No I2C devices found\n";
+  }
+  else
+  {
+    Serial << nDevices << " found\n";
+    ui.logInfo() << "done\n";
+  }
+
+  delay(10);
 
   sensorDS18B20->begin();
   // Search the wire for address
   if (sensorDS18B20->getAddress(ds18b20Address, 0))
   {
-    ui.logInfo() << "Found DS18B20 device, ";
+    // at index 0 is fixed code for DS18B20, at index 7 is crc
+    ui.logInfo() << "Found DS18B20 device at address 0x" << _HEX(ds18b20Address[1]) << _HEX(ds18b20Address[2])
+                 << _HEX(ds18b20Address[3]) << _HEX(ds18b20Address[4]) << _HEX(ds18b20Address[5]) << _HEX(ds18b20Address[6]) << ", ";
     sensorDS18B20->setResolution(ds18b20Address, TEMPERATURE_PRECISION);
     ui.logInfo() << "Resolution set to: " << _DEC(sensorDS18B20->getResolution(ds18b20Address)) << endl;
   }
