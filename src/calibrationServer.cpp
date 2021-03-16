@@ -51,12 +51,12 @@
 #include <ESPAsyncTCP.h>
 #include <ESPAsyncWebServer.h>
 #include <FS.h>
-#include <WEMOS_SHT3X.h>
 
-#include <SPI.h>
-#include <BME280I2C.h>
+#include <SPI.h> // BME280.h needs that, to compile
 #include <Wire.h>
 #include <DallasTemperature.h>
+#include <SFE_BMP180.h>
+#include <BME280I2C.h>
 
 #define LOGBUF_LENGTH 30000 // log buffer size
 //#define VERBOSE_DEBUG_LOGBUFFER
@@ -78,17 +78,19 @@
 UniversalUI ui = UniversalUI("calibrationServer");
 WiFiUDP ntpUDP;
 NTPClient *timeClient = new NTPClient(ntpUDP, "europe.pool.ntp.org", 3600, 60000);
-SHT3X *sht = new SHT3X(0x77);
+
 OneWire oneWire(PIN_DS18B20);
 DallasTemperature *sensorDS18B20 = new DallasTemperature(&oneWire);
 DeviceAddress ds18b20Address;
+
+SFE_BMP180 *sensorBmp180 = new SFE_BMP180();
 
 BME280I2C *bme = new BME280I2C(); // Default, address=0x76, forced mode, standby time = 1000 ms; Oversampling = pressure ×1, temperature ×1, humidity ×1, filter off
 BME280::TempUnit tempUnit(BME280::TempUnit_Celsius);
 BME280::PresUnit presUnit(BME280::PresUnit_Pa);
 
 float temperatureDs18b20(NAN);
-float temperatureBmp180(NAN), humidityBmp180(NAN);
+double temperatureBmp180(NAN), pressureBmp180(NAN);
 float temperatureBme280(NAN), humidityBme280(NAN), pressureBme280(NAN);
 
 AppendBuffer buf = AppendBuffer(2000);
@@ -101,8 +103,8 @@ String placeholderProcessor(const String &var)
     return buf.format(PSTR("%lu"), temperatureDs18b20);
   if (0 == strcmp_P(var.c_str(), PSTR("BMP180_TEMPERATURE")))
     return buf.format(PSTR("%.1f"), temperatureBmp180);
-  if (0 == strcmp_P(var.c_str(), PSTR("BMP180_HUMIDITY")))
-    return buf.format(PSTR("%.1f"), humidityBmp180);
+  if (0 == strcmp_P(var.c_str(), PSTR("BMP180_PRESSURE")))
+    return buf.format(PSTR("%.1f"), pressureBmp180);
   if (0 == strcmp_P(var.c_str(), PSTR("BME280_TEMPERATURE")))
     return buf.format(PSTR("%.1f"), temperatureBme280);
   if (0 == strcmp_P(var.c_str(), PSTR("BME280_HUMIDITY")))
@@ -198,6 +200,7 @@ void setup()
   ui.setBlink(100, 4900);
   serverSetup();
 
+  Wire.begin();
   int nDevices = 0;
   for (byte address = 1; address < 127; address++)
   {
@@ -248,19 +251,28 @@ void setup()
     sensorDS18B20 = nullptr;
   }
 
-  Wire.begin();
+  if (sensorBmp180->begin())
+    ui.logDebug() << "BMP180 init success\n";
+  else
+  {
+    // Oops, something went wrong, this is usually a connection problem,
+    ui.logError() << "BMP180 init fail\n\n";
+    delete sensorBmp180;
+    sensorBmp180 = nullptr;
+  }
+
   if (bme->begin())
   {
     switch (bme->chipModel())
     {
     case BME280::ChipModel_BME280:
-      ui.logInfo() << "Found BME280 sensor! Success.\n";
+      ui.logInfo() << "Found BME280 sensor\n";
       break;
     case BME280::ChipModel_BMP280:
-      ui.logInfo() << "Found BMP280 sensor! No Humidity available.\n";
+      ui.logInfo() << "Found BMP280 sensor - No Humidity available\n";
       break;
     default:
-      ui.logWarn() << "Found UNKNOWN sensor!\n";
+      ui.logWarn() << "Found UNKNOWN sensor instead of BME/BMP280!\n";
     }
   }
   else
@@ -304,20 +316,38 @@ void loop()
 
     // BMP-180 sensor
     now = millis();
-    if (0 == sht->get())
+    char statusBmp180 = sensorBmp180->startTemperature();
+    if (statusBmp180 != 0)
     {
-      temperatureBmp180 = sht->cTemp;
-      humidityBmp180 = sht->humidity;
-      out << COLUMN_SEPARATOR << _FLOAT(temperatureBmp180, 1) << COLUMN_SEPARATOR;
-      out << humidityBmp180 << COLUMN_SEPARATOR;
-      out << (millis() < now) << COLUMN_SEPARATOR;
+      delay(statusBmp180);
+      statusBmp180 = sensorBmp180->getTemperature(temperatureBmp180);
+      if (statusBmp180 != 0)
+      {
+        out << COLUMN_SEPARATOR << _FLOAT(temperatureBmp180, 1) << COLUMN_SEPARATOR;
+        statusBmp180 = sensorBmp180->startPressure(3);
+        if (statusBmp180 != 0)
+        {
+          delay(statusBmp180);
+          statusBmp180 = sensorBmp180->getPressure(pressureBmp180, temperatureBmp180);
+          if (statusBmp180 != 0)
+          {
+            out << pressureBmp180 << COLUMN_SEPARATOR;
+          }
+          else
+            //BMP180: error retrieving pressure measurement
+            out << COLUMN_SEPARATOR;
+        }
+        //else BMP180: error starting pressure measurement
+        out << (millis() < now) << COLUMN_SEPARATOR;
+      }
+      else
+        // BMP180: error retrieving temperature measurement
+        out << COLUMN_SEPARATOR << COLUMN_SEPARATOR << COLUMN_SEPARATOR << COLUMN_SEPARATOR;
     }
     else
     {
+      // BMP180: error starting temperature measurement
       out << COLUMN_SEPARATOR << COLUMN_SEPARATOR << COLUMN_SEPARATOR << COLUMN_SEPARATOR;
-      temperatureBmp180 = NAN;
-      humidityBmp180 = NAN;
-      //logToSerial() << "BMP180 status: " << sht2xStatus << endl;
     }
 
     // BME-280 sensor
