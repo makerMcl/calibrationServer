@@ -22,6 +22,11 @@
  * * D2 = GPIO4 = SDA (I2C)
  * * OneWire (DS18B20) on a free pin, configured is GPIO14 (D5) // D0 does not work
  * 
+ * * D8 = GPIO15 = HC12-Rx (swapped UART0 Tx)   -> Boot fails if pulled HIGH: 10kOhm-pull-down required to boot (I~55µA)
+ * * D7 = GPIO13 = HC12-Tx (swapped UART0 Rx)
+ * * D6 = GPIO12 = HC12-Set
+ * 
+ * 
  * Note: <ul>
  * <li>multiple devices at I2C bus: bus topology, no star!
  * <li>if lines get longer, use 4k7 pull-up resistors on I2C lines (at master)
@@ -57,6 +62,7 @@
 #include <DallasTemperature.h>
 #include <SFE_BMP180.h>
 #include <BME280I2C.h>
+#include <SoftwareSerial.h> // TODO remove after test phase
 
 #define LOGBUF_LENGTH 30000 // log buffer size
 //#define VERBOSE_DEBUG_LOGBUFFER
@@ -66,6 +72,7 @@
 #define UNIVERSALUI_WIFI_RECONNECT_WAIT 1000
 
 #define PIN_DS18B20 D5           // GPIO14 // do not use GPIO0=D3! does not work with D0/GPIO16
+#define PIN_DS18B20 D0           // GPIO2 // do not use GPIO0=D3!!
 #define TEMPERATURE_PRECISION 10 // resolution for DS18B20
 
 #define COLUMN_SEPARATOR ("; ")
@@ -73,6 +80,7 @@
 #include "universalUi.h"
 #include "webUiGenericPlaceHolder.h"
 #include "appendBuffer.h"
+#include "hc12tool.h"
 #define HEXNR(X) _WIDTHZ(_HEX(X), 2)
 #define ONEWIREADR(X) HEXNR(X[1]) << HEXNR(X[2]) << HEXNR(X[3]) << HEXNR(X[4]) << HEXNR(X[5]) << HEXNR(X[6])
 
@@ -94,10 +102,16 @@ BME280::PresUnit presUnit(BME280::PresUnit_Pa);
 float temperatureDs18b20(NAN);
 double temperatureBmp180(NAN), pressureBmp180(NAN);
 float temperatureBme280(NAN), humidityBme280(NAN), pressureBme280(NAN);
+char *hc12ConfigInfo;
 
 AppendBuffer buf = AppendBuffer(2000);
 AsyncWebServer *webUiServer = new AsyncWebServer(80);
 RefreshState *refreshState = new RefreshState(5);
+
+SoftwareSerial hc12serial(D7, D8); // Rx, Tx; GPIO13, GPIO15
+// HardwareSerial hc12serial = Serial0;
+HardwareSerial usbSerial=Serial; //(RX, TX);
+Hc12Tool<SoftwareSerial> hc12tool(PIN_HC12SET, hc12serial);
 
 String placeholderProcessor(const String &var)
 {
@@ -174,7 +188,7 @@ void serverSetup()
   });
   webUiServer->onNotFound([](AsyncWebServerRequest *request) {
     String body = (request->hasParam("body", true)) ? request->getParam("body", true)->value() : String();
-    Serial << " not found! " << request->url();
+    usbSerial << " not found! " << request->url();
     ui.logInfo() << F("unknown uri=") << request->url() << ", method=" << request->method() << ", body=" << body << endl;
   });
 #pragma GCC diagnostic pop
@@ -185,14 +199,13 @@ Print &logToSerial()
 {
   if (ui.isNtpTimeValid())
   {
-    Serial << ui.getFormattedTime();
+    usbSerial << ui.getFormattedTime();
   }
   else
   {
-    Serial << _WIDTH(millis(), 8);
+    usbSerial << _WIDTH(millis(), 8);
   }
-  Serial << F(" ERROR ");
-  return Serial;
+  return usbSerial;
 }
 
 void setup()
@@ -201,6 +214,12 @@ void setup()
   ui.init(LED_BUILTIN, true, F(__FILE__), F(__TIMESTAMP__));
   ui.setBlink(100, 4900);
   serverSetup();
+
+  hc12tool.setVerbosity(true, false, ui.logDebug());
+  hc12tool.setParameters(BPS57600, DBM8, 3);
+  hc12ConfigInfo = hc12tool.getConfigurationInfo();
+  ui.logInfo() << "HC-12 info:\n";
+  ui.logInfo(hc12ConfigInfo);
 
   Wire.begin();
   int nDevices = 0;
@@ -213,47 +232,47 @@ void setup()
     byte error = Wire.endTransmission();
     if (error == 0)
     {
-      Serial << "I2C device found at address 0x" << HEXNR(address) << endl;
+      usbSerial << "I2C device found at address 0x" << HEXNR(address) << endl;
       ui.logInfo() << "I2C device found at address 0x" << HEXNR(address) << endl;
       nDevices++;
     }
     else if (error == 4)
     {
-      Serial << "Unknown error at address 0x" << HEXNR(address) << endl;
+      usbSerial << "Unknown error at address 0x" << HEXNR(address) << endl;
       ui.logError() << "Unknown error at address 0x" << HEXNR(address) << endl;
     }
   }
   if (nDevices == 0)
   {
-    Serial << "No I2C devices found\n";
+    usbSerial << "No I2C devices found\n";
     ui.logWarn() << "No I2C devices found\n";
   }
   else
   {
-    Serial << nDevices << " found\n";
+    usbSerial << nDevices << " i2c-devices found\n";
     ui.logInfo() << "done\n";
   }
 
   byte addr[8];
   byte numFound = 0;
-  Serial.print(F("Looking for 1-Wire devices: "));
+  usbSerial.print(F("Looking for 1-Wire devices: "));
   while (oneWire.search(addr))
   {
     ++numFound;
-    Serial << F("\n  *Found '1-Wire' device with address 0x") << ONEWIREADR(addr);
+    usbSerial << F("\n  *Found '1-Wire' device with address 0x") << ONEWIREADR(addr);
     Print &log = ui.logInfo() << F("\n  *Found '1-Wire' device with address 0x") << ONEWIREADR(addr);
     if (OneWire::crc8(addr, 7) != addr[7])
     {
       log << F(", CRC is not valid!\n");
-      Serial << F(", CRC is not valid!\n");
+      usbSerial << F(", CRC is not valid!\n");
     }
     else
     {
       log << endl;
-      Serial << endl;
+      usbSerial << endl;
     }
   }
-  Serial << F("Found ") << numFound << F(" devices.\n");
+  usbSerial << F("Found ") << numFound << F(" devices.\n");
   ui.logInfo() << F("found ") << numFound << F(" onewire devices\n");
   oneWire.reset_search();
 
@@ -313,6 +332,8 @@ void setup()
 
 void loop()
 {
+  // handle HC-12 stream
+
   if (ui.handle() && (millis() % 5000) == 4500)
   {
     Print &out = ui.logInfo();
