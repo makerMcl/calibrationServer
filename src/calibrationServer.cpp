@@ -316,7 +316,7 @@ void loop()
 
     // BMP-180 sensor
     now = millis();
-    char statusBmp180 = sensorBmp180->startTemperature();
+    char statusBmp180 = (nullptr == sensorBmp180) ? 0 : sensorBmp180->startTemperature();
     if (statusBmp180 != 0)
     {
       delay(statusBmp180);
