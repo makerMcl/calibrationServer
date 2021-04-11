@@ -351,8 +351,8 @@ void setup()
 
   ui.logInfo() << F("STARTED\n\n\n\n");
   ui.logInfo() << COLUMN_SEPARATOR << F("DS18B20-Temp [") << ((char)176) << F("C]") << COLUMN_SEPARATOR << F("DS18B20-tofs [ms]") << COLUMN_SEPARATOR
-               << COLUMN_SEPARATOR << F("BMP180-Temp [") << ((char)176) << F("C]") << COLUMN_SEPARATOR << F(" BMP180-Hum. [%]") << COLUMN_SEPARATOR << F("BMP180-tofs [ms]") << COLUMN_SEPARATOR
-               << COLUMN_SEPARATOR << F("BME280-Temp [") << ((char)176) << F("C]") << COLUMN_SEPARATOR << F(" BME280-Hum. [%]") << COLUMN_SEPARATOR << F("BME280-Press. [Pa]") << COLUMN_SEPARATOR << F("BME280-tofs [ms]") << COLUMN_SEPARATOR << endl;
+               << COLUMN_SEPARATOR << F("BMP180-Temp [") << ((char)176) << F("C]") << COLUMN_SEPARATOR << F(" BMP180-Press. [%]") << COLUMN_SEPARATOR << F("BMP180-tofs [ms]") << COLUMN_SEPARATOR
+               << COLUMN_SEPARATOR << F("BME280-Temp [") << ((char)176) << F("C]") << COLUMN_SEPARATOR << F("BME280-Press. [Pa]") << COLUMN_SEPARATOR << F(" BME280-Hum. [%]") << COLUMN_SEPARATOR << F("BME280-tofs [ms]") << COLUMN_SEPARATOR << endl;
 }
 
 void loop()
@@ -434,8 +434,8 @@ void loop()
     else
     {
       out << COLUMN_SEPARATOR << _FLOAT(temperatureBme280, 1) << COLUMN_SEPARATOR;
-      out << _FLOAT(humidityBme280, 1) << COLUMN_SEPARATOR;
       out << _FLOAT(pressureBme280, 1) << COLUMN_SEPARATOR;
+      out << _FLOAT(humidityBme280, 1) << COLUMN_SEPARATOR;
       out << (millis() < now) << COLUMN_SEPARATOR;
     }
     // end of spreadsheet output
