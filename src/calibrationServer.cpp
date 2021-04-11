@@ -1,3 +1,19 @@
+/*
+    This program is free software: you can redistribute it and/or modify
+    it under the terms of the GNU General Public License as published by
+    the Free Software Foundation, either version 3 of the License, or
+    (at your option) any later version.
+
+    This program is distributed in the hope that it will be useful,
+    but WITHOUT ANY WARRANTY; without even the implied warranty of
+    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+    GNU General Public License for more details.
+
+    You should have received a copy of the GNU General Public License
+    along with this program.  If not, see <http://www.gnu.org/licenses/>
+
+    Copyright 2021 makerMcl
+ */
 /**
  * Sensor server for various temperature sensors.
  * 
@@ -22,7 +38,7 @@
  * * D2 = GPIO4 = SDA (I2C)
  * * OneWire (DS18B20) on a free pin, configured is GPIO14 (D5) // D0 does not work
  * 
- * * D8 = GPIO15 = HC12-Rx (swapped UART0 Tx)   -> Boot fails if pulled HIGH: 10kOhm-pull-down required to boot (I~55µA)
+ * * D8 = GPIO15 = HC12-Rx (swapped UART0 Tx)   -> 10kOhm-pull-down required to boot (I~55µA)
  * * D7 = GPIO13 = HC12-Tx (swapped UART0 Rx)
  * * D6 = GPIO12 = HC12-Set
  * 
@@ -30,23 +46,9 @@
  * Note: <ul>
  * <li>multiple devices at I2C bus: bus topology, no star!
  * <li>if lines get longer, use 4k7 pull-up resistors on I2C lines (at master)
+ * <li>confiuration uses hardwareserial UART0 for the HC-12 device, for hw-buffering (less data loss).
+ * Debug output to USB is thereof realized with SoftwareSerial to RX/TX pin.
  * </ul>
- */
-/*
-    This program is free software: you can redistribute it and/or modify
-    it under the terms of the GNU General Public License as published by
-    the Free Software Foundation, either version 3 of the License, or
-    (at your option) any later version.
-
-    This program is distributed in the hope that it will be useful,
-    but WITHOUT ANY WARRANTY; without even the implied warranty of
-    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-    GNU General Public License for more details.
-
-    You should have received a copy of the GNU General Public License
-    along with this program.  If not, see <http://www.gnu.org/licenses/>
-
-    Copyright 2021 makerMcl
  */
 
 #include <Arduino.h>
@@ -62,7 +64,7 @@
 #include <DallasTemperature.h>
 #include <SFE_BMP180.h>
 #include <BME280I2C.h>
-#include <SoftwareSerial.h> // TODO remove after test phase
+#include <SoftwareSerial.h>
 
 #define LOGBUF_LENGTH 30000 // log buffer size
 //#define VERBOSE_DEBUG_LOGBUFFER
@@ -80,6 +82,7 @@
 #include "universalUi.h"
 #include "webUiGenericPlaceHolder.h"
 #include "appendBuffer.h"
+#define VERBOSE_DEBUG_HC12TOOL
 #include "hc12tool.h"
 #define HEXNR(X) _WIDTHZ(_HEX(X), 2)
 #define ONEWIREADR(X) HEXNR(X[1]) << HEXNR(X[2]) << HEXNR(X[3]) << HEXNR(X[4]) << HEXNR(X[5]) << HEXNR(X[6])
@@ -108,10 +111,11 @@ AppendBuffer buf = AppendBuffer(2000);
 AsyncWebServer *webUiServer = new AsyncWebServer(80);
 RefreshState *refreshState = new RefreshState(5);
 
-SoftwareSerial hc12serial(D7, D8); // Rx, Tx; GPIO13, GPIO15
-// HardwareSerial hc12serial = Serial0;
-HardwareSerial usbSerial = Serial; //(RX, TX);
-Hc12Tool<SoftwareSerial> hc12tool(PIN_HC12SET, hc12serial);
+//SoftwareSerial hc12serial(D7, D8); // Rx, Tx; GPIO13, GPIO15
+//Stream &usbSerial=Serial;
+HardwareSerial hc12serial = Serial;
+SoftwareSerial usbSerial(RX, TX); //(RX, TX);
+Hc12Tool<HardwareSerial> hc12tool(PIN_HC12SET, hc12serial);
 
 String placeholderProcessor(const String &var)
 {
@@ -237,7 +241,7 @@ void scanI2C()
   }
   else
   {
-    usbSerial << nDevices << " i2c-devices found\n";
+    usbSerial << nDevices << " I2C-devices found\n";
     ui.logInfo() << "done\n";
   }
 }
@@ -262,8 +266,16 @@ void scanOneWire()
       usbSerial << endl;
     }
   }
-  usbSerial << F("Found ") << numFound << F(" devices.\n");
-  ui.logInfo() << F("found ") << numFound << F(" onewire devices\n");
+  if (numFound > 0)
+  {
+    usbSerial << F("Found ") << numFound << F(" devices.\n");
+    ui.logInfo() << F("found ") << numFound << F(" devices\n");
+  }
+  else
+  {
+    usbSerial << F("No 1-wire devices found.\n");
+    ui.logInfo() << F("No 1-wire devices found.\n");
+  }
   oneWire.reset_search();
 }
 
@@ -271,43 +283,48 @@ void setup()
 {
   ui.setNtpClient(timeClient);
   ui.init(LED_BUILTIN, true, F(__FILE__), F(__TIMESTAMP__));
+  hc12serial.updateBaudRate(9600); // ui.init() calls Serial.begin() so we must initialize swapped config after
+  hc12serial.swap();               // map UART0 to pins 13/15
+  usbSerial.begin(74800);          // default baudrate of ESP8266's bootloader
   ui.setBlink(100, 4900);
   serverSetup();
 
-  hc12tool.setVerbosity(true, false, ui.logDebug());
-  hc12tool.setParameters(BPS57600, DBM8, 3);
+  hc12tool.setVerbosity(true, true, usbSerial);
+  //hc12tool.setParameters(BPS57600, DBM8, 3);
+  hc12tool.setBaudrate(BPS57600);
   hc12ConfigInfo = hc12tool.getConfigurationInfo();
-  ui.logInfo() << "HC-12 info:\n";
+  ui.logInfo() << F("HC-12 info:\n");
   ui.logInfo(hc12ConfigInfo);
 
   Wire.begin();
   scanI2C();
   scanOneWire();
 
-  // init sensors
+  /////////////  init sensors  ////////////////////
   sensorDS18B20->begin();
   // Search the wire for address
   if (sensorDS18B20->getAddress(ds18b20Address, 0))
   {
     // at index 0 is fixed code for DS18B20, at index 7 is crc
-    ui.logInfo() << "Found DS18B20 device at address 0x" << ONEWIREADR(ds18b20Address) << ", ";
+    ui.logInfo() << F("Found DS18B20 device at address 0x") << ONEWIREADR(ds18b20Address) << ", ";
     sensorDS18B20->setResolution(ds18b20Address, TEMPERATURE_PRECISION);
     sensorDS18B20->setWaitForConversion(true);
+    ui.logInfo() << "Resolution set to: " << _DEC(sensorDS18B20->getResolution(ds18b20Address)) << endl;
     ui.logInfo() << F("Resolution set to: ") << _DEC(sensorDS18B20->getResolution(ds18b20Address)) << endl;
   }
   else
   {
-    ui.logWarn() << "Found no DS18B20 device\n";
+    ui.logWarn() << F("Found no DS18B20 device\n");
     delete sensorDS18B20;
     sensorDS18B20 = nullptr;
   }
 
   if (sensorBmp180->begin())
-    ui.logDebug() << "BMP180 init success\n";
+    ui.logDebug() << F("BMP180 init success\n");
   else
   {
     // Oops, something went wrong, this is usually a connection problem,
-    ui.logError() << "BMP180 init fail\n";
+    ui.logError() << F("BMP180 init fail\n");
     delete sensorBmp180;
     sensorBmp180 = nullptr;
   }
@@ -317,25 +334,25 @@ void setup()
     switch (bme->chipModel())
     {
     case BME280::ChipModel_BME280:
-      ui.logInfo() << "Found BME280 sensor\n";
+      ui.logInfo() << F("Found BME280 sensor\n");
       break;
     case BME280::ChipModel_BMP280:
-      ui.logInfo() << "Found BMP280 sensor - No Humidity available\n";
+      ui.logInfo() << F("Found BMP280 sensor - No Humidity available\n");
       break;
     default:
-      ui.logWarn() << "Found UNKNOWN sensor instead of BME/BMP280!\n";
+      ui.logWarn() << F("Found UNKNOWN sensor instead of BME/BMP280!\n");
     }
   }
   else
   {
     bme = nullptr;
-    ui.logWarn() << "Found no BME280 device\n";
+    ui.logWarn() << F("Found no BME280 device\n");
   }
 
-  ui.logInfo() << "STARTED\n\n\n\n";
-  ui.logInfo() << COLUMN_SEPARATOR << "DS18B20-Temp [" << ((char)176) << "C]" << COLUMN_SEPARATOR << "DS18B20-tofs [ms]" << COLUMN_SEPARATOR
-               << COLUMN_SEPARATOR << "BMP180-Temp [" << ((char)176) << "C]" << COLUMN_SEPARATOR << " BMP180-Hum. [%]" << COLUMN_SEPARATOR << "BMP180-tofs [ms]" << COLUMN_SEPARATOR
-               << COLUMN_SEPARATOR << "BME280-Temp [" << ((char)176) << "C]" << COLUMN_SEPARATOR << " BME280-Hum. [%]" << COLUMN_SEPARATOR << "BME280-Press. [Pa]" << COLUMN_SEPARATOR << "BME280-tofs [ms]" << COLUMN_SEPARATOR << endl;
+  ui.logInfo() << F("STARTED\n\n\n\n");
+  ui.logInfo() << COLUMN_SEPARATOR << F("DS18B20-Temp [") << ((char)176) << F("C]") << COLUMN_SEPARATOR << F("DS18B20-tofs [ms]") << COLUMN_SEPARATOR
+               << COLUMN_SEPARATOR << F("BMP180-Temp [") << ((char)176) << F("C]") << COLUMN_SEPARATOR << F(" BMP180-Hum. [%]") << COLUMN_SEPARATOR << F("BMP180-tofs [ms]") << COLUMN_SEPARATOR
+               << COLUMN_SEPARATOR << F("BME280-Temp [") << ((char)176) << F("C]") << COLUMN_SEPARATOR << F(" BME280-Hum. [%]") << COLUMN_SEPARATOR << F("BME280-Press. [Pa]") << COLUMN_SEPARATOR << F("BME280-tofs [ms]") << COLUMN_SEPARATOR << endl;
 }
 
 void loop()
@@ -349,9 +366,9 @@ void loop()
     // TODO test loop for bug of missing 2 characters in part 0 of clipped log buf content
     if (false)
     {
-      logToSerial() << "[MAIN] Free heap: " << ESP.getFreeHeap() << " bytes\n";
-      out << "     01234567890123456789012345678901234567890123456789" << endl; // 70chars per line
-      delay(1);                                                                 // enforce next millisecond
+      logToSerial() << F("[MAIN] Free heap: ") << ESP.getFreeHeap() << F(" bytes\n");
+      out << F("     01234567890123456789012345678901234567890123456789") << endl; // 70chars per line
+      delay(1);                                                                    // enforce next millisecond
       return;
     }
 
@@ -423,7 +440,7 @@ void loop()
     }
     // end of spreadsheet output
     out << endl;
-    logToSerial() << "[MAIN] Free heap: " << ESP.getFreeHeap() << " bytes\n";
+    logToSerial() << F("[MAIN] Free heap: ") << ESP.getFreeHeap() << F(" bytes\n");
     delay(1); // enforce next millisecond
   }
 }
