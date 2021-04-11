@@ -73,6 +73,8 @@
 #include "universalUi.h"
 #include "webUiGenericPlaceHolder.h"
 #include "appendBuffer.h"
+#define HEXNR(X) _WIDTHZ(_HEX(X), 2)
+#define ONEWIREADR(X) HEXNR(X[1]) << HEXNR(X[2]) << HEXNR(X[3]) << HEXNR(X[4]) << HEXNR(X[5]) << HEXNR(X[6])
 
 // global ui instance
 UniversalUI ui = UniversalUI("calibrationServer");
@@ -211,14 +213,14 @@ void setup()
     byte error = Wire.endTransmission();
     if (error == 0)
     {
-      Serial << "I2C device found at address 0x" << _WIDTHZ(_HEX(address), 2) << endl;
-      ui.logInfo() << "I2C device found at address 0x" << _WIDTHZ(_HEX(address), 2) << endl;
+      Serial << "I2C device found at address 0x" << HEXNR(address) << endl;
+      ui.logInfo() << "I2C device found at address 0x" << HEXNR(address) << endl;
       nDevices++;
     }
     else if (error == 4)
     {
-      Serial << "Unknown error at address 0x" << _WIDTHZ(_HEX(address), 2) << endl;
-      ui.logError() << "Unknown error at address 0x" << _WIDTHZ(_HEX(address), 2) << endl;
+      Serial << "Unknown error at address 0x" << HEXNR(address) << endl;
+      ui.logError() << "Unknown error at address 0x" << HEXNR(address) << endl;
     }
   }
   if (nDevices == 0)
@@ -232,15 +234,36 @@ void setup()
     ui.logInfo() << "done\n";
   }
 
-  delay(10);
+  byte addr[8];
+  byte numFound = 0;
+  Serial.print(F("Looking for 1-Wire devices: "));
+  while (oneWire.search(addr))
+  {
+    ++numFound;
+    Serial << F("\n  *Found '1-Wire' device with address 0x") << ONEWIREADR(addr);
+    Print &log = ui.logInfo() << F("\n  *Found '1-Wire' device with address 0x") << ONEWIREADR(addr);
+    if (OneWire::crc8(addr, 7) != addr[7])
+    {
+      log << F(", CRC is not valid!\n");
+      Serial << F(", CRC is not valid!\n");
+    }
+    else
+    {
+      log << endl;
+      Serial << endl;
+    }
+  }
+  Serial << F("Found ") << numFound << F(" devices.\n");
+  ui.logInfo() << F("found ") << numFound << F(" onewire devices\n");
+  oneWire.reset_search();
 
+  // init sensors
   sensorDS18B20->begin();
   // Search the wire for address
   if (sensorDS18B20->getAddress(ds18b20Address, 0))
   {
     // at index 0 is fixed code for DS18B20, at index 7 is crc
-    ui.logInfo() << "Found DS18B20 device at address 0x" << _HEX(ds18b20Address[1]) << _HEX(ds18b20Address[2])
-                 << _HEX(ds18b20Address[3]) << _HEX(ds18b20Address[4]) << _HEX(ds18b20Address[5]) << _HEX(ds18b20Address[6]) << ", ";
+    ui.logInfo() << "Found DS18B20 device at address 0x" << ONEWIREADR(ds18b20Address) << ", ";
     sensorDS18B20->setResolution(ds18b20Address, TEMPERATURE_PRECISION);
     ui.logInfo() << "Resolution set to: " << _DEC(sensorDS18B20->getResolution(ds18b20Address)) << endl;
   }
@@ -256,7 +279,7 @@ void setup()
   else
   {
     // Oops, something went wrong, this is usually a connection problem,
-    ui.logError() << "BMP180 init fail\n\n";
+    ui.logError() << "BMP180 init fail\n";
     delete sensorBmp180;
     sensorBmp180 = nullptr;
   }
