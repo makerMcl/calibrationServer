@@ -110,7 +110,7 @@ RefreshState *refreshState = new RefreshState(5);
 
 SoftwareSerial hc12serial(D7, D8); // Rx, Tx; GPIO13, GPIO15
 // HardwareSerial hc12serial = Serial0;
-HardwareSerial usbSerial=Serial; //(RX, TX);
+HardwareSerial usbSerial = Serial; //(RX, TX);
 Hc12Tool<SoftwareSerial> hc12tool(PIN_HC12SET, hc12serial);
 
 String placeholderProcessor(const String &var)
@@ -208,20 +208,8 @@ Print &logToSerial()
   return usbSerial;
 }
 
-void setup()
+void scanI2C()
 {
-  ui.setNtpClient(timeClient);
-  ui.init(LED_BUILTIN, true, F(__FILE__), F(__TIMESTAMP__));
-  ui.setBlink(100, 4900);
-  serverSetup();
-
-  hc12tool.setVerbosity(true, false, ui.logDebug());
-  hc12tool.setParameters(BPS57600, DBM8, 3);
-  hc12ConfigInfo = hc12tool.getConfigurationInfo();
-  ui.logInfo() << "HC-12 info:\n";
-  ui.logInfo(hc12ConfigInfo);
-
-  Wire.begin();
   int nDevices = 0;
   for (byte address = 1; address < 127; address++)
   {
@@ -252,7 +240,9 @@ void setup()
     usbSerial << nDevices << " i2c-devices found\n";
     ui.logInfo() << "done\n";
   }
-
+}
+void scanOneWire()
+{
   byte addr[8];
   byte numFound = 0;
   usbSerial.print(F("Looking for 1-Wire devices: "));
@@ -275,6 +265,24 @@ void setup()
   usbSerial << F("Found ") << numFound << F(" devices.\n");
   ui.logInfo() << F("found ") << numFound << F(" onewire devices\n");
   oneWire.reset_search();
+}
+
+void setup()
+{
+  ui.setNtpClient(timeClient);
+  ui.init(LED_BUILTIN, true, F(__FILE__), F(__TIMESTAMP__));
+  ui.setBlink(100, 4900);
+  serverSetup();
+
+  hc12tool.setVerbosity(true, false, ui.logDebug());
+  hc12tool.setParameters(BPS57600, DBM8, 3);
+  hc12ConfigInfo = hc12tool.getConfigurationInfo();
+  ui.logInfo() << "HC-12 info:\n";
+  ui.logInfo(hc12ConfigInfo);
+
+  Wire.begin();
+  scanI2C();
+  scanOneWire();
 
   // init sensors
   sensorDS18B20->begin();
