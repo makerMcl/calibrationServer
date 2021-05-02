@@ -18,9 +18,9 @@
  * * Vcc: 100..220nF directly an Vcc-Pins; + 1000µF for buffering WLAN-transmission
  * 
  * Pins used on Wemos D1 Mini:
- * * D1 = GPIO5 = SCL
- * * D2 = GPIO4 = SDA
- * * OneWire (DS18B20) on any pin you like, configured is GPIO16 (D0)
+ * * D1 = GPIO5 = SCL (I2C)
+ * * D2 = GPIO4 = SDA (I2C)
+ * * OneWire (DS18B20) on a free pin, configured is GPIO14 (D5) // D0 does not work
  * 
  * Note: <ul>
  * <li>multiple devices at I2C bus: bus topology, no star!
@@ -65,7 +65,7 @@
 #define UNIVERSALUI_WIFI_MAX_CONNECT_TRIES 20
 #define UNIVERSALUI_WIFI_RECONNECT_WAIT 1000
 
-#define PIN_DS18B20 D0           // GPIO2 // do not use GPIO0=D3!!
+#define PIN_DS18B20 D5           // GPIO14 // do not use GPIO0=D3! does not work with D0/GPIO16
 #define TEMPERATURE_PRECISION 10 // resolution for DS18B20
 
 #define COLUMN_SEPARATOR ("; ")
@@ -265,7 +265,8 @@ void setup()
     // at index 0 is fixed code for DS18B20, at index 7 is crc
     ui.logInfo() << "Found DS18B20 device at address 0x" << ONEWIREADR(ds18b20Address) << ", ";
     sensorDS18B20->setResolution(ds18b20Address, TEMPERATURE_PRECISION);
-    ui.logInfo() << "Resolution set to: " << _DEC(sensorDS18B20->getResolution(ds18b20Address)) << endl;
+    sensorDS18B20->setWaitForConversion(true);
+    ui.logInfo() << F("Resolution set to: ") << _DEC(sensorDS18B20->getResolution(ds18b20Address)) << endl;
   }
   else
   {
@@ -327,6 +328,7 @@ void loop()
 
     // DS18B20 sensor
     unsigned long now = millis();
+    sensorDS18B20->requestTemperaturesByAddress(ds18b20Address);
     if (sensorDS18B20 && (DEVICE_DISCONNECTED_C != (temperatureDs18b20 = sensorDS18B20->getTempC(ds18b20Address))))
     {
       out << COLUMN_SEPARATOR << _FLOAT(temperatureDs18b20, 1) << COLUMN_SEPARATOR;
