@@ -66,7 +66,7 @@
 #include <BME280I2C.h>
 #include <SoftwareSerial.h>
 
-#define LOGBUF_LENGTH 30000 // log buffer size
+#define LOGBUF_LENGTH 20000 // log buffer size
 //#define VERBOSE_DEBUG_LOGBUFFER
 
 // note: `#define COPY_TO_SERIAL` must be ommitted in universalSettings.h!
@@ -74,10 +74,12 @@
 #define UNIVERSALUI_WIFI_RECONNECT_WAIT 1000
 
 #define PIN_DS18B20 D5           // GPIO14 // do not use GPIO0=D3! does not work with D0/GPIO16
-#define PIN_DS18B20 D0           // GPIO2 // do not use GPIO0=D3!!
+#define PIN_HC12SET D6           // GPIO12
+#define PIN_HC12TX D7            // GPIO13, Tx-pin of HC-12, from ESP's view it is Rx
+#define PIN_HC12RX D8            // GPIO15, Rx-pin of HC-12, from ESP's view it is Tx
 #define TEMPERATURE_PRECISION 10 // resolution for DS18B20
 
-#define COLUMN_SEPARATOR ("; ")
+#define COLUMN_SEPARATOR "; "
 
 #include "universalUi.h"
 #include "webUiGenericPlaceHolder.h"
@@ -111,11 +113,15 @@ AppendBuffer buf = AppendBuffer(2000);
 AsyncWebServer *webUiServer = new AsyncWebServer(80);
 RefreshState *refreshState = new RefreshState(5);
 
-//SoftwareSerial hc12serial(D7, D8); // Rx, Tx; GPIO13, GPIO15
-//Stream &usbSerial=Serial;
-HardwareSerial hc12serial = Serial;
-SoftwareSerial usbSerial(RX, TX); //(RX, TX);
-Hc12Tool<HardwareSerial> hc12tool(PIN_HC12SET, hc12serial);
+SoftwareSerial hc12serial(PIN_HC12TX, PIN_HC12RX); // args: Rx, Tx
+Stream &usbSerial = Serial;
+// TODO if need to use larger buffer (default: 64byte) then need to parameterize Softwareserial.begin() in hc12tool, via callback?
+Hc12Tool<SoftwareSerial> hc12tool(PIN_HC12SET, hc12serial);
+// variant: hc12 at hardware serial, but Serial.swap() dit not work. SoftwareSerial uses interrupts so we won't loose data
+// HardwareSerial hc12serial = Serial;
+//SoftwareSerial usbSerial(RX, TX); //(RX, TX);
+// Hc12Tool<HardwareSerial> hc12tool(PIN_HC12SET, hc12serial);
+LogBuffer *hc12Content = new LogBuffer(10000, true);
 
 String placeholderProcessor(const String &var)
 {
@@ -143,62 +149,6 @@ String placeholderProcessor(const String &var)
   return universalUiPlaceholderProcessor(var, buf);
 }
 
-void serverSetup()
-{
-  // Initialize SPIFFS
-  // note: it must be SPIFFS, LittleFS is not supported by ESP-FlashTool!
-#pragma GCC diagnostic push
-#pragma GCC diagnostic ignored "-Wdeprecated-declarations"
-  if (!SPIFFS.begin())
-  {
-    ui.logError() << "An Error has occurred while mounting SPIFFS\n";
-    return;
-  }
-  // webUI control page
-  webUiServer->on("/index.html", HTTP_ANY, [](AsyncWebServerRequest *request) {
-    refreshState->evaluateRefreshParameters(request);
-    AsyncWebServerResponse *response = request->beginResponse(SPIFFS, "/index.html", "text/html", false, placeholderProcessor);
-    response->addHeader(F("Cache-Control"), F("no-cache, must-revalidate"));
-    response->addHeader(F("Pragma"), F("no-cache"));
-    request->send(response);
-  });
-  webUiServer->on("/log.html", HTTP_ANY, [](AsyncWebServerRequest *request) {
-    refreshState->evaluateRefreshParameters(request);
-    // note: placeholder for log buffer content is $LOG$
-    AsyncWebServerResponse *response = //request->beginResponse(SPIFFS, "/log.html", "text/html", false, placeholderProcessor);
-        request->beginStatefulResponse("text/html", 0, new FileWithLogBufferResponseDataSource(SPIFFS, "/log.html"), placeholderProcessor);
-    response->addHeader(F("Cache-Control"), F("no-cache, must-revalidate"));
-    response->addHeader(F("Pragma"), F("no-cache"));
-    request->send(response);
-  });
-  webUiServer->on("/download", HTTP_ANY, [](AsyncWebServerRequest *request) {
-    AsyncResponseStream *response = request->beginResponseStream("text/csv");
-    response->addHeader(F("Content-Disposition"), F("attachment; filename=\"sensordata.csv\""));
-    response->addHeader(F("Cache-Control"), F("no-cache, must-revalidate"));
-    response->addHeader(F("Pragma"), F("no-cache"));
-    response->print(ui.getHtmlLog(0));
-    response->print(ui.getHtmlLog(1));
-    request->send(response);
-  });
-
-  webUiServer->on("/log/memory", HTTP_ANY, [](AsyncWebServerRequest *request) {
-    ui.logInfo() << F("free heap = ") << ESP.getFreeHeap() << endl;
-    request->redirect(F("/log.html"));
-  });
-  webUiServer->serveStatic("/favicon.ico", SPIFFS, "/calibrationServer.ico").setCacheControl("max-age=86400"); // 1 day = 24*60*60 [sec]
-  webUiServer->serveStatic("/style.css", SPIFFS, "/style.css").setCacheControl("max-age=86400");
-  webUiServer->on("/", HTTP_ANY, [](AsyncWebServerRequest *request) {
-    request->redirect(F("/index.html"));
-  });
-  webUiServer->onNotFound([](AsyncWebServerRequest *request) {
-    String body = (request->hasParam("body", true)) ? request->getParam("body", true)->value() : String();
-    usbSerial << " not found! " << request->url();
-    ui.logInfo() << F("unknown uri=") << request->url() << ", method=" << request->method() << ", body=" << body << endl;
-  });
-#pragma GCC diagnostic pop
-  webUiServer->begin();
-}
-
 Print &logToSerial()
 {
   if (ui.isNtpTimeValid())
@@ -212,89 +162,28 @@ Print &logToSerial()
   return usbSerial;
 }
 
-void scanI2C()
-{
-  int nDevices = 0;
-  for (byte address = 1; address < 127; address++)
-  {
-    // The i2c_scanner uses the return value of
-    // the Write.endTransmisstion to see if
-    // a device did acknowledge to the address.
-    Wire.beginTransmission(address);
-    byte error = Wire.endTransmission();
-    if (error == 0)
-    {
-      usbSerial << "I2C device found at address 0x" << HEXNR(address) << endl;
-      ui.logInfo() << "I2C device found at address 0x" << HEXNR(address) << endl;
-      nDevices++;
-    }
-    else if (error == 4)
-    {
-      usbSerial << "Unknown error at address 0x" << HEXNR(address) << endl;
-      ui.logError() << "Unknown error at address 0x" << HEXNR(address) << endl;
-    }
-  }
-  if (nDevices == 0)
-  {
-    usbSerial << "No I2C devices found\n";
-    ui.logWarn() << "No I2C devices found\n";
-  }
-  else
-  {
-    usbSerial << nDevices << " I2C-devices found\n";
-    ui.logInfo() << "done\n";
-  }
-}
-void scanOneWire()
-{
-  byte addr[8];
-  byte numFound = 0;
-  usbSerial.print(F("Looking for 1-Wire devices: "));
-  while (oneWire.search(addr))
-  {
-    ++numFound;
-    usbSerial << F("\n  *Found '1-Wire' device with address 0x") << ONEWIREADR(addr);
-    Print &log = ui.logInfo() << F("\n  *Found '1-Wire' device with address 0x") << ONEWIREADR(addr);
-    if (OneWire::crc8(addr, 7) != addr[7])
-    {
-      log << F(", CRC is not valid!\n");
-      usbSerial << F(", CRC is not valid!\n");
-    }
-    else
-    {
-      log << endl;
-      usbSerial << endl;
-    }
-  }
-  if (numFound > 0)
-  {
-    usbSerial << F("Found ") << numFound << F(" devices.\n");
-    ui.logInfo() << F("found ") << numFound << F(" devices\n");
-  }
-  else
-  {
-    usbSerial << F("No 1-wire devices found.\n");
-    ui.logInfo() << F("No 1-wire devices found.\n");
-  }
-  oneWire.reset_search();
-}
+void serverSetup();
+void scanOneWire();
+void scanI2C();
 
 void setup()
 {
   ui.setNtpClient(timeClient);
   ui.init(LED_BUILTIN, true, F(__FILE__), F(__TIMESTAMP__));
-  hc12serial.updateBaudRate(9600); // ui.init() calls Serial.begin() so we must initialize swapped config after
-  hc12serial.swap();               // map UART0 to pins 13/15
-  usbSerial.begin(74800);          // default baudrate of ESP8266's bootloader
+  // variant: use hardware serial for HC-12
+  //hc12serial.updateBaudRate(9600); // ui.init() calls Serial.begin() so we must initialize swapped config after
+  //hc12serial.swap();               // map UART0 to pins 13/15
+  //usbSerial.begin(74800);          // default baudrate of ESP8266's bootloader
   ui.setBlink(100, 4900);
   serverSetup();
 
-  hc12tool.setVerbosity(true, true, usbSerial);
+  hc12serial.begin(9600);
+  hc12tool.setVerbosity(true, true, usbSerial); // Softwareserial.begin() is called by hc12tool
   //hc12tool.setParameters(BPS57600, DBM8, 3);
   hc12tool.setBaudrate(BPS57600);
   hc12ConfigInfo = hc12tool.getConfigurationInfo();
-  ui.logInfo() << F("HC-12 info:\n");
-  ui.logInfo(hc12ConfigInfo);
+  usbSerial.print(hc12ConfigInfo);
+  ui.logInfo() << F("HC-12 info:\n") << hc12ConfigInfo;
 
   Wire.begin();
   scanI2C();
@@ -308,7 +197,6 @@ void setup()
     // at index 0 is fixed code for DS18B20, at index 7 is crc
     ui.logInfo() << F("Found DS18B20 device at address 0x") << ONEWIREADR(ds18b20Address) << ", ";
     sensorDS18B20->setResolution(ds18b20Address, TEMPERATURE_PRECISION);
-    sensorDS18B20->setWaitForConversion(true);
     ui.logInfo() << "Resolution set to: " << _DEC(sensorDS18B20->getResolution(ds18b20Address)) << endl;
     ui.logInfo() << F("Resolution set to: ") << _DEC(sensorDS18B20->getResolution(ds18b20Address)) << endl;
   }
@@ -355,15 +243,28 @@ void setup()
                << COLUMN_SEPARATOR << F("BME280-Temp [") << ((char)176) << F("C]") << COLUMN_SEPARATOR << F("BME280-Press. [Pa]") << COLUMN_SEPARATOR << F(" BME280-Hum. [%]") << COLUMN_SEPARATOR << F("BME280-tofs [ms]") << COLUMN_SEPARATOR << endl;
 }
 
+// at 115200 Baud with 8N1 = 12.8kByte/sec ~ 13Byte/msec -> default 64Byte buffer can cover 5 milliseconds
+void handleHC12data()
+{
+  const int num = hc12serial.available();
+  if (num)
+    usbSerial << " <" << num << "> ";
+  while (hc12serial.available())
+  {
+    const int data = hc12serial.read();
+    hc12Content->write(data);
+    usbSerial.write(data);
+  }
+}
+
 void loop()
 {
-  // handle HC-12 stream
-
+  handleHC12data();
   if (ui.handle() && (millis() % 5000) == 4500)
   {
     Print &out = ui.logInfo();
 
-    // TODO test loop for bug of missing 2 characters in part 0 of clipped log buf content
+    // DEBUG test loop for bug of missing 2 characters in part 0 of clipped log buf content
     if (false)
     {
       logToSerial() << F("[MAIN] Free heap: ") << ESP.getFreeHeap() << F(" bytes\n");
@@ -374,8 +275,7 @@ void loop()
 
     // DS18B20 sensor
     unsigned long now = millis();
-    sensorDS18B20->requestTemperaturesByAddress(ds18b20Address);
-    if (sensorDS18B20 && (DEVICE_DISCONNECTED_C != (temperatureDs18b20 = sensorDS18B20->getTempC(ds18b20Address))))
+    if (sensorDS18B20 && sensorDS18B20->requestTemperaturesByAddress(ds18b20Address) && (DEVICE_DISCONNECTED_C != (temperatureDs18b20 = sensorDS18B20->getTempC(ds18b20Address))))
     {
       out << COLUMN_SEPARATOR << _FLOAT(temperatureDs18b20, 1) << COLUMN_SEPARATOR;
       out << (millis() < now) << COLUMN_SEPARATOR;
@@ -384,6 +284,7 @@ void loop()
     {
       out << COLUMN_SEPARATOR << COLUMN_SEPARATOR;
     }
+    handleHC12data();
 
     // BMP-180 sensor
     now = millis();
@@ -420,6 +321,7 @@ void loop()
       // BMP180: error starting temperature measurement
       out << COLUMN_SEPARATOR << COLUMN_SEPARATOR << COLUMN_SEPARATOR << COLUMN_SEPARATOR;
     }
+    handleHC12data();
 
     // BME-280 sensor
     now = millis();
@@ -440,7 +342,170 @@ void loop()
     }
     // end of spreadsheet output
     out << endl;
+    handleHC12data();
     logToSerial() << F("[MAIN] Free heap: ") << ESP.getFreeHeap() << F(" bytes\n");
     delay(1); // enforce next millisecond
   }
+}
+
+void scanI2C()
+{
+  int nDevices = 0;
+  for (byte address = 1; address < 127; address++)
+  {
+    // The i2c_scanner uses the return value of
+    // the Write.endTransmisstion to see if
+    // a device did acknowledge to the address.
+    Wire.beginTransmission(address);
+    byte error = Wire.endTransmission();
+    if (error == 0)
+    {
+      usbSerial << F("  * I2C device found at address 0x") << HEXNR(address) << endl;
+      ui.logInfo() << F("  * I2C device found at address 0x") << HEXNR(address) << endl;
+      nDevices++;
+    }
+    else if (error == 4)
+    {
+      usbSerial << F("  * Unknown error at address 0x") << HEXNR(address) << endl;
+      ui.logError() << F("  * Unknown error at address 0x") << HEXNR(address) << endl;
+    }
+  }
+  if (nDevices == 0)
+  {
+    usbSerial << F("No I2C devices found\n");
+    ui.logWarn() << F("No I2C devices found\n");
+  }
+  else
+  {
+    usbSerial << F("I2C-devices found: ") << nDevices << endl;
+    ui.logInfo() << F("I2C-devices found: ") << nDevices << endl;
+  }
+}
+
+void scanOneWire()
+{
+  byte addr[8];
+  byte numFound = 0;
+  usbSerial.print(F("Looking for 1-Wire devices: "));
+  while (oneWire.search(addr))
+  {
+    ++numFound;
+    usbSerial << F("\n  * Found '1-Wire' device with address 0x") << ONEWIREADR(addr);
+    Print &log = ui.logInfo() << F("\n  *Found '1-Wire' device with address 0x") << ONEWIREADR(addr);
+    if (OneWire::crc8(addr, 7) != addr[7])
+    {
+      log << F(", CRC is not valid!\n");
+      usbSerial << F(", CRC is not valid!\n");
+    }
+    else
+    {
+      log << endl;
+      usbSerial << endl;
+    }
+  }
+  if (numFound > 0)
+  {
+    usbSerial << F("Found ") << numFound << F(" devices.\n");
+    ui.logInfo() << F("found ") << numFound << F(" devices\n");
+  }
+  else
+  {
+    usbSerial << F("No 1-wire devices found.\n");
+    ui.logInfo() << F("No 1-wire devices found.\n");
+  }
+  oneWire.reset_search();
+}
+
+class LogBufferResponseDataSource : public AwsResponseDataSource
+{
+private:
+  LogBuffer *_logBuffer;
+  size_t bufferSourceIndex = 0; // next index from log buffer
+  size_t bufferRotationPoint;
+
+public:
+  LogBufferResponseDataSource(LogBuffer *logBuffer) : _logBuffer(logBuffer) {}
+
+  // read data from log buffer as long as more data available and space left in buf
+  virtual size_t fillBuffer(uint8_t *buf, size_t maxLen, size_t index)
+  {
+    size_t filledLen = 0;
+    uint8_t *targetBuf = buf;
+    size_t bufferReadLen;
+    do
+    {
+      bufferReadLen = _logBuffer->getLog(targetBuf, maxLen, bufferSourceIndex, bufferRotationPoint);
+      if (RESPONSE_TRY_AGAIN == bufferReadLen)
+        return filledLen > 0 ? filledLen : RESPONSE_TRY_AGAIN;
+      bufferSourceIndex += bufferReadLen;
+      filledLen += bufferReadLen;
+      targetBuf += bufferReadLen;
+      maxLen -= bufferReadLen;
+    } while (bufferReadLen > 0 && maxLen > 0);
+    return filledLen;
+  }
+
+  virtual ~LogBufferResponseDataSource() {}
+};
+
+void serverSetup()
+{
+  // Initialize SPIFFS
+  // note: it must be SPIFFS, LittleFS is not supported by ESP-FlashTool!
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wdeprecated-declarations"
+  if (!SPIFFS.begin())
+  {
+    ui.logError() << "An Error has occurred while mounting SPIFFS\n";
+    return;
+  }
+  // webUI control page
+  webUiServer->on("/index.html", HTTP_ANY, [](AsyncWebServerRequest *request) {
+    refreshState->evaluateRefreshParameters(request);
+    AsyncWebServerResponse *response = request->beginResponse(SPIFFS, "/index.html", "text/html", false, placeholderProcessor);
+    response->addHeader(F("Cache-Control"), F("no-cache, must-revalidate"));
+    response->addHeader(F("Pragma"), F("no-cache"));
+    request->send(response);
+  });
+  webUiServer->on("/log.html", HTTP_ANY, [](AsyncWebServerRequest *request) {
+    refreshState->evaluateRefreshParameters(request);
+    // note: placeholder for log buffer content is $LOG$
+    AsyncWebServerResponse *response = request->beginStatefulResponse("text/html", 0, new FileWithLogBufferResponseDataSource(SPIFFS, "/log.html"), placeholderProcessor);
+    response->addHeader(F("Cache-Control"), F("no-cache, must-revalidate"));
+    response->addHeader(F("Pragma"), F("no-cache"));
+    request->send(response);
+  });
+  webUiServer->on("/download", HTTP_ANY, [](AsyncWebServerRequest *request) {
+    AsyncResponseStream *response = request->beginResponseStream("text/csv");
+    response->addHeader(F("Content-Disposition"), F("attachment; filename=\"sensordata.csv\""));
+    response->addHeader(F("Cache-Control"), F("no-cache, must-revalidate"));
+    response->addHeader(F("Pragma"), F("no-cache"));
+    response->print(ui.getHtmlLog(0));
+    response->print(ui.getHtmlLog(1));
+    request->send(response);
+  });
+  // serve hc12content buffer directly as response object, to provide refresh via ajax
+  webUiServer->on("/hc12received", HTTP_ANY, [](AsyncWebServerRequest *request) {
+    AsyncWebServerResponse *response = request->beginStatefulResponse("text/html", 0, new LogBufferResponseDataSource(hc12Content));
+    response->addHeader(F("Cache-Control"), F("no-cache, must-revalidate"));
+    response->addHeader(F("Pragma"), F("no-cache"));
+    request->send(response);
+  });
+
+  webUiServer->on("/log/memory", HTTP_ANY, [](AsyncWebServerRequest *request) {
+    ui.logInfo() << F("free heap = ") << ESP.getFreeHeap() << endl;
+    request->redirect(F("/log.html"));
+  });
+  webUiServer->serveStatic("/favicon.ico", SPIFFS, "/calibrationServer.ico").setCacheControl("max-age=86400"); // 1 day = 24*60*60 [sec]
+  webUiServer->serveStatic("/style.css", SPIFFS, "/style.css").setCacheControl("max-age=86400");
+  webUiServer->on("/", HTTP_ANY, [](AsyncWebServerRequest *request) {
+    request->redirect(F("/index.html"));
+  });
+  webUiServer->onNotFound([](AsyncWebServerRequest *request) {
+    String body = (request->hasParam("body", true)) ? request->getParam("body", true)->value() : String();
+    usbSerial << " not found! " << request->url();
+    ui.logInfo() << F("unknown uri=") << request->url() << ", method=" << request->method() << ", body=" << body << endl;
+  });
+#pragma GCC diagnostic pop
+  webUiServer->begin();
 }
