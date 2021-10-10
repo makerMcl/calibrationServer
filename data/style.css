@@ -54,3 +54,6 @@ span.logstatus {color:blue;font-weight:bold;}
     vertical-align:middle;
     padding-bottom: 15px;
 }
+
+/* TODO placeholder for bootstrap */
+.active {color:red;font-weight: bold;}

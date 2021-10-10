@@ -38,16 +38,16 @@
  * * D2 = GPIO4 = SDA (I2C)
  * * OneWire (DS18B20) on a free pin, configured is GPIO14 (D5) // D0 does not work
  * 
- * * D8 = GPIO15 = HC12-Rx (swapped UART0 Tx)   -> 10kOhm-pull-down required to boot (I~55µA)
- * * D7 = GPIO13 = HC12-Tx (swapped UART0 Rx)
- * * D6 = GPIO12 = HC12-Set
+ * * D8 = GPIO15 = HC12-Rx (swapped to UART0 Tx)   -> 10kOhm-pull-down required to boot (I~55µA)
+ * * D7 = GPIO13 = HC12-Tx (swapped to UART0 Rx)
+ * * D3 = GPIO12 = HC12-Set
  * 
+ * * D6 = GPIO0 = RXB12 output (output is really weak, datasheet mentions 500kOhm measure condition)
  * 
  * Note: <ul>
  * <li>multiple devices at I2C bus: bus topology, no star!
  * <li>if lines get longer, use 4k7 pull-up resistors on I2C lines (at master)
- * <li>confiuration uses hardwareserial UART0 for the HC-12 device, for hw-buffering (less data loss).
- * Debug output to USB is thereof realized with SoftwareSerial to RX/TX pin.
+ * <li>no need to use hardwareserial UART0 for the HC-12 device, since SoftwareSerial uses interrupts and thus won't loose more data that hardware serial.
  * </ul>
  */
 
@@ -65,26 +65,29 @@
 #include <SFE_BMP180.h>
 #include <BME280I2C.h>
 #include <SoftwareSerial.h>
+#include "RCSwitch.h"
 
-#define LOGBUF_LENGTH 20000 // log buffer size
-//#define VERBOSE_DEBUG_LOGBUFFER
+#define LOGBUF_LENGTH 20000     // log buffer size
+#define VERBOSE_DEBUG_LOGBUFFER // verbose logging for logbuffer filling
+//#define VERBOSE_DEBUG_HC12TOOL // verbose logging for hc12 tool
 
 // note: `#define COPY_TO_SERIAL` must be ommitted in universalSettings.h!
+#define COPY_TO_SERIAL
 #define UNIVERSALUI_WIFI_MAX_CONNECT_TRIES 20
 #define UNIVERSALUI_WIFI_RECONNECT_WAIT 1000
 
-#define PIN_DS18B20 D5           // GPIO14 // do not use GPIO0=D3! does not work with D0/GPIO16
-#define PIN_HC12SET D6           // GPIO12
+#define TEMPERATURE_PRECISION 10 // resolution for DS18B20
+#define PIN_DS18B20 D5           // GPIO14, Onewire // do not use GPIO0=D3! does not work with D0/GPIO16
+#define PIN_HC12SET D0           // GPIO16
 #define PIN_HC12TX D7            // GPIO13, Tx-pin of HC-12, from ESP's view it is Rx
 #define PIN_HC12RX D8            // GPIO15, Rx-pin of HC-12, from ESP's view it is Tx
-#define TEMPERATURE_PRECISION 10 // resolution for DS18B20
+#define PIN_HF433_RECEIVE D6     // GPIO12, Data-Pin of a 433Mhz-Receiver, e.g. RXB-12
 
 #define COLUMN_SEPARATOR "; "
 
 #include "universalUi.h"
 #include "webUiGenericPlaceHolder.h"
 #include "appendBuffer.h"
-#define VERBOSE_DEBUG_HC12TOOL
 #include "hc12tool.h"
 #define HEXNR(X) _WIDTHZ(_HEX(X), 2)
 #define ONEWIREADR(X) HEXNR(X[1]) << HEXNR(X[2]) << HEXNR(X[3]) << HEXNR(X[4]) << HEXNR(X[5]) << HEXNR(X[6])
@@ -104,12 +107,16 @@ BME280I2C *bme = new BME280I2C(); // Default, address=0x76, forced mode, standby
 BME280::TempUnit tempUnit(BME280::TempUnit_Celsius);
 BME280::PresUnit presUnit(BME280::PresUnit_Pa);
 
+RCSwitch rcSwitch = RCSwitch();
+
 float temperatureDs18b20(NAN);
 double temperatureBmp180(NAN), pressureBmp180(NAN);
 float temperatureBme280(NAN), humidityBme280(NAN), pressureBme280(NAN);
 char *hc12ConfigInfo;
 
-AppendBuffer buf = AppendBuffer(2000);
+// IMPORTANT: on multi-core processors (ESP32!) should use different instance
+char appendBufMemory[2000];
+AppendBuffer buf = AppendBuffer(2000, appendBufMemory); // note: is re-used for placeholder variables AND hc12 line detection
 AsyncWebServer *webUiServer = new AsyncWebServer(80);
 RefreshState *refreshState = new RefreshState(5);
 
@@ -122,6 +129,13 @@ Hc12Tool<SoftwareSerial> hc12tool(PIN_HC12SET, hc12serial);
 //SoftwareSerial usbSerial(RX, TX); //(RX, TX);
 // Hc12Tool<HardwareSerial> hc12tool(PIN_HC12SET, hc12serial);
 LogBuffer *hc12Content = new LogBuffer(10000, true);
+
+struct
+{
+  bool dumpMeasures : 1;
+  bool dumpHc12 : 1;
+  bool dumpHf433 : 1;
+} configuration = {true, false, false};
 
 String placeholderProcessor(const String &var)
 {
@@ -137,6 +151,15 @@ String placeholderProcessor(const String &var)
     return buf.format(PSTR("%.1f"), humidityBme280);
   if (0 == strcmp_P(var.c_str(), PSTR("BME280_PRESSURE")))
     return buf.format(PSTR("%.1f"), pressureBme280);
+
+  if (0 == strcmp_P(var.c_str(), PSTR("CSSCLASS_MEASURES")))
+    return configuration.dumpMeasures ? "active" : "";
+  if (0 == strcmp_P(var.c_str(), PSTR("CSSCLASS_HC12CONTENT")))
+    return configuration.dumpHc12 ? "active" : "";
+  if (0 == strcmp_P(var.c_str(), PSTR("CSSCLASS_HF433CONTENT")))
+    return configuration.dumpHf433 ? "active" : "";
+  if (0 == strcmp_P(var.c_str(), PSTR("ISACTIVE_HF433")))
+    return configuration.dumpHf433 ? "true" : "false";
 
   if (0 == strcmp_P(var.c_str(), PSTR("REFRESHINDEXTAG")))
     return refreshState->getRefreshTag(buf, "/index.html");
@@ -237,6 +260,11 @@ void setup()
     ui.logWarn() << F("Found no BME280 device\n");
   }
 
+  if (PIN_HF433_RECEIVE > 0)
+  {
+    rcSwitch.enableReceive(PIN_HF433_RECEIVE);
+  }
+
   ui.logInfo() << F("STARTED\n\n\n\n");
   ui.logInfo() << COLUMN_SEPARATOR << F("DS18B20-Temp [") << ((char)176) << F("C]") << COLUMN_SEPARATOR << F("DS18B20-tofs [ms]") << COLUMN_SEPARATOR
                << COLUMN_SEPARATOR << F("BMP180-Temp [") << ((char)176) << F("C]") << COLUMN_SEPARATOR << F(" BMP180-Press. [%]") << COLUMN_SEPARATOR << F("BMP180-tofs [ms]") << COLUMN_SEPARATOR
@@ -253,13 +281,39 @@ void handleHC12data()
   {
     const int data = hc12serial.read();
     hc12Content->write(data);
-    usbSerial.write(data);
+    usbSerial.write(data); // TODO remove??
+    // TODO filter to lines
+    if (configuration.dumpHc12)
+      ui.logTrace().write(data);
   }
 }
+
+static const char *bin2tristate(const char *bin);
+static char *dec2binWzerofill(unsigned long decValue, unsigned int bitLength);
 
 void loop()
 {
   handleHC12data();
+
+  if (rcSwitch.available())
+  {
+    if (configuration.dumpHf433)
+    {
+      const unsigned int dataLength = rcSwitch.getReceivedBitlength();
+      const char *b = dec2binWzerofill(rcSwitch.getReceivedValue(), dataLength);
+      ui.logInfo() << F("HF433: Decimal: ") << rcSwitch.getReceivedValue() << F(" (") << dataLength
+                   << F("Bit) Binary: ") << b << F(" Tri-State: ") << bin2tristate(b) << F(" PulseLength: ") << rcSwitch.getReceivedDelay() << F(" microseconds, Protocol: ") << rcSwitch.getReceivedProtocol() << endl;
+
+      unsigned int *rawData = rcSwitch.getReceivedRawdata();
+      Print &p = ui.logInfo() << F("Raw data: ");
+      for (unsigned int i = 0; i <= dataLength * 2; i++)
+        p << rawData[i] << F(",");
+      p << endl
+        << endl;
+    }
+    rcSwitch.resetAvailable();
+  }
+
   if (ui.handle() && (millis() % 5000) == 4500)
   {
     Print &out = ui.logInfo();
@@ -275,14 +329,22 @@ void loop()
 
     // DS18B20 sensor
     unsigned long now = millis();
-    if (sensorDS18B20 && sensorDS18B20->requestTemperaturesByAddress(ds18b20Address) && (DEVICE_DISCONNECTED_C != (temperatureDs18b20 = sensorDS18B20->getTempC(ds18b20Address))))
+    if (sensorDS18B20)
     {
-      out << COLUMN_SEPARATOR << _FLOAT(temperatureDs18b20, 1) << COLUMN_SEPARATOR;
-      out << (millis() < now) << COLUMN_SEPARATOR;
+      sensorDS18B20->requestTemperaturesByAddress(ds18b20Address);
+      temperatureDs18b20 = sensorDS18B20->getTempC(ds18b20Address);
     }
-    else
+    if (configuration.dumpMeasures)
     {
-      out << COLUMN_SEPARATOR << COLUMN_SEPARATOR;
+      if (sensorDS18B20 && (DEVICE_DISCONNECTED_C != (temperatureDs18b20)))
+      {
+        out << COLUMN_SEPARATOR << _FLOAT(temperatureDs18b20, 1) << COLUMN_SEPARATOR;
+        out << (millis() < now) << COLUMN_SEPARATOR;
+      }
+      else
+      {
+        out << COLUMN_SEPARATOR << COLUMN_SEPARATOR;
+      }
     }
     handleHC12data();
 
@@ -295,31 +357,35 @@ void loop()
       statusBmp180 = sensorBmp180->getTemperature(temperatureBmp180);
       if (statusBmp180 != 0)
       {
-        out << COLUMN_SEPARATOR << _FLOAT(temperatureBmp180, 1) << COLUMN_SEPARATOR;
+        if (configuration.dumpMeasures)
+          out << COLUMN_SEPARATOR << _FLOAT(temperatureBmp180, 1) << COLUMN_SEPARATOR;
         statusBmp180 = sensorBmp180->startPressure(3);
         if (statusBmp180 != 0)
         {
           delay(statusBmp180);
           statusBmp180 = sensorBmp180->getPressure(pressureBmp180, temperatureBmp180);
-          if (statusBmp180 != 0)
+          if (configuration.dumpMeasures)
           {
-            out << pressureBmp180 << COLUMN_SEPARATOR;
+            if (statusBmp180 != 0)
+              out << pressureBmp180 << COLUMN_SEPARATOR;
+            else //BMP180: error retrieving pressure measurement
+              out << COLUMN_SEPARATOR;
           }
-          else
-            //BMP180: error retrieving pressure measurement
-            out << COLUMN_SEPARATOR;
         }
         //else BMP180: error starting pressure measurement
-        out << (millis() < now) << COLUMN_SEPARATOR;
+        if (configuration.dumpMeasures)
+          out << (millis() < now) << COLUMN_SEPARATOR;
       }
-      else
-        // BMP180: error retrieving temperature measurement
-        out << COLUMN_SEPARATOR << COLUMN_SEPARATOR << COLUMN_SEPARATOR << COLUMN_SEPARATOR;
+      else // BMP180: error retrieving temperature measurement
+      {
+        if (configuration.dumpMeasures)
+          out << COLUMN_SEPARATOR << COLUMN_SEPARATOR << COLUMN_SEPARATOR << COLUMN_SEPARATOR;
+      }
     }
-    else
+    else // BMP180: error starting temperature measurement
     {
-      // BMP180: error starting temperature measurement
-      out << COLUMN_SEPARATOR << COLUMN_SEPARATOR << COLUMN_SEPARATOR << COLUMN_SEPARATOR;
+      if (configuration.dumpMeasures)
+        out << COLUMN_SEPARATOR << COLUMN_SEPARATOR << COLUMN_SEPARATOR << COLUMN_SEPARATOR;
     }
     handleHC12data();
 
@@ -329,19 +395,23 @@ void loop()
     {
       bme->read(pressureBme280, temperatureBme280, humidityBme280, tempUnit, presUnit);
     }
-    if (isnan(pressureBme280) && isnan(temperatureBme280) && isnan(humidityBme280))
+    if (configuration.dumpMeasures)
     {
-      out << COLUMN_SEPARATOR << COLUMN_SEPARATOR << COLUMN_SEPARATOR << COLUMN_SEPARATOR << COLUMN_SEPARATOR;
+
+      if (isnan(pressureBme280) && isnan(temperatureBme280) && isnan(humidityBme280))
+      {
+        out << COLUMN_SEPARATOR << COLUMN_SEPARATOR << COLUMN_SEPARATOR << COLUMN_SEPARATOR << COLUMN_SEPARATOR;
+      }
+      else
+      {
+        out << COLUMN_SEPARATOR << _FLOAT(temperatureBme280, 1) << COLUMN_SEPARATOR;
+        out << _FLOAT(pressureBme280, 1) << COLUMN_SEPARATOR;
+        out << _FLOAT(humidityBme280, 1) << COLUMN_SEPARATOR;
+        out << (millis() < now) << COLUMN_SEPARATOR;
+      }
+      // end of spreadsheet output
+      out << endl;
     }
-    else
-    {
-      out << COLUMN_SEPARATOR << _FLOAT(temperatureBme280, 1) << COLUMN_SEPARATOR;
-      out << _FLOAT(pressureBme280, 1) << COLUMN_SEPARATOR;
-      out << _FLOAT(humidityBme280, 1) << COLUMN_SEPARATOR;
-      out << (millis() < now) << COLUMN_SEPARATOR;
-    }
-    // end of spreadsheet output
-    out << endl;
     handleHC12data();
     logToSerial() << F("[MAIN] Free heap: ") << ESP.getFreeHeap() << F(" bytes\n");
     delay(1); // enforce next millisecond
@@ -416,6 +486,63 @@ void scanOneWire()
   oneWire.reset_search();
 }
 
+static const char *bin2tristate(const char *bin)
+{
+  static char returnValue[50];
+  int pos = 0;
+  int pos2 = 0;
+  while (bin[pos] != '\0' && bin[pos + 1] != '\0')
+  {
+    if (bin[pos] == '0' && bin[pos + 1] == '0')
+    {
+      returnValue[pos2] = '0';
+    }
+    else if (bin[pos] == '1' && bin[pos + 1] == '1')
+    {
+      returnValue[pos2] = '1';
+    }
+    else if (bin[pos] == '0' && bin[pos + 1] == '1')
+    {
+      returnValue[pos2] = 'F';
+    }
+    else
+    {
+      return "not applicable";
+    }
+    pos = pos + 2;
+    pos2++;
+  }
+  returnValue[pos2] = '\0';
+  return returnValue;
+}
+
+static char *dec2binWzerofill(unsigned long decValue, unsigned int bitLength)
+{
+  static char bin[64];
+  unsigned int i = 0;
+
+  while (decValue > 0)
+  {
+    bin[32 + i++] = ((decValue & 1) > 0) ? '1' : '0';
+    decValue = decValue >> 1;
+  }
+
+  for (unsigned int j = 0; j < bitLength; j++)
+  {
+    if (j >= bitLength - i)
+    {
+      bin[j] = bin[31 + i - (j - (bitLength - i))];
+    }
+    else
+    {
+      bin[j] = '0';
+    }
+  }
+  bin[bitLength] = '\0';
+
+  return bin;
+}
+
 class LogBufferResponseDataSource : public AwsResponseDataSource
 {
 private:
@@ -462,18 +589,38 @@ void serverSetup()
   // webUI control page
   webUiServer->on("/index.html", HTTP_ANY, [](AsyncWebServerRequest *request) {
     refreshState->evaluateRefreshParameters(request);
+    if (request->hasParam(F("toggleMeasures")))
+    {
+      configuration.dumpMeasures = !configuration.dumpMeasures;
+      ui.logTrace() << F("measures will ") << (configuration.dumpMeasures ? F("") : F("not ")) << F("be loggged") << endl;
+    }
+    if (request->hasParam(F("toggleHc12content")))
+    {
+      configuration.dumpHc12 = !configuration.dumpHc12;
+      ui.logTrace() << F("hc12 content will ") << (configuration.dumpHc12 ? F("") : F("not ")) << F("be loggged") << endl;
+    }
+    if (request->hasParam(F("toggleHf433receive")))
+    {
+      configuration.dumpHf433 = !configuration.dumpHf433;
+      ui.logTrace() << F("hf433 received commands will ") << (configuration.dumpHf433 ? F("") : F("not ")) << F("be loggged") << endl;
+    }
+
     AsyncWebServerResponse *response = request->beginResponse(SPIFFS, "/index.html", "text/html", false, placeholderProcessor);
     response->addHeader(F("Cache-Control"), F("no-cache, must-revalidate"));
     response->addHeader(F("Pragma"), F("no-cache"));
     request->send(response);
   });
   webUiServer->on("/log.html", HTTP_ANY, [](AsyncWebServerRequest *request) {
+    usbSerial << "debug1" << endl;
     refreshState->evaluateRefreshParameters(request);
+    usbSerial << "debug2" << endl;
     // note: placeholder for log buffer content is $LOG$
     AsyncWebServerResponse *response = request->beginStatefulResponse("text/html", 0, new FileWithLogBufferResponseDataSource(SPIFFS, "/log.html"), placeholderProcessor);
     response->addHeader(F("Cache-Control"), F("no-cache, must-revalidate"));
     response->addHeader(F("Pragma"), F("no-cache"));
+    usbSerial << "debug3" << endl;
     request->send(response);
+    usbSerial << "debug4" << endl;
   });
   webUiServer->on("/download", HTTP_ANY, [](AsyncWebServerRequest *request) {
     AsyncResponseStream *response = request->beginResponseStream("text/csv");
@@ -496,7 +643,8 @@ void serverSetup()
     ui.logInfo() << F("free heap = ") << ESP.getFreeHeap() << endl;
     request->redirect(F("/log.html"));
   });
-  webUiServer->serveStatic("/favicon.ico", SPIFFS, "/calibrationServer.ico").setCacheControl("max-age=86400"); // 1 day = 24*60*60 [sec]
+  webUiServer->serveStatic("/favicon.ico", SPIFFS, "/calibrationServer.ico").setCacheControl("max-age=86400"); // = 1 day = 24*60*60 [sec]
+  webUiServer->serveStatic("/jquery.min.js", SPIFFS, "/jquery-3.6.0.min.js").setCacheControl("max-age=86400");
   webUiServer->serveStatic("/style.css", SPIFFS, "/style.css").setCacheControl("max-age=86400");
   webUiServer->on("/", HTTP_ANY, [](AsyncWebServerRequest *request) {
     request->redirect(F("/index.html"));
